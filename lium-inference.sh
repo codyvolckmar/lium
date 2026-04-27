@@ -8,6 +8,8 @@
 #   ./lium-inference.sh --list              # Just list available models
 #   ./lium-inference.sh --stop              # Tear down the running pod
 #   ./lium-inference.sh --status            # Check pod & endpoint status
+#   ./lium-inference.sh -f -m llama3.1-8b   # Fire-and-forget (writes .lium-endpoint.json)
+#   ./lium-inference.sh -f -m qwen3-32b -t 4h  # Fire-and-forget with 4h TTL
 #
 # Configuration:
 #   Set APIKEY variable below or export LIUM_API_KEY environment variable
@@ -38,7 +40,7 @@ err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # ── API Key Configuration ───────────────────────────────────────────────────
 # Set your Lium API key here or export LIUM_API_KEY environment variable
 # The script will use this key to authenticate with Lium's API
-APIKEY="${LIUM_API_KEY:-}"
+APIKEY="${LIUM_API_KEY:-sk_BvT7nx59eHNgj37hbSOQIGRV0vC9xI-I9_b2LfX3f3g}"
 
 # If APIKEY is set, export it for lium CLI to use
 if [[ -n "$APIKEY" ]]; then
@@ -46,69 +48,121 @@ if [[ -n "$APIKEY" ]]; then
 fi
 
 # ── Model Catalogue ─────────────────────────────────────────────────────────
-# Each entry: MODEL_ID | HuggingFace repo | Min VRAM (GB) | Recommended GPU | GPU count | Quant
+# HIGH-PERFORMANCE TEXT-ONLY LLMs — No vision/multimodal models
+# Each entry: "hf_repo|min_vram_gb|gpu_type|gpu_count|quant_note|context_length"
 # VRAM estimates assume FP16/BF16 for full-precision, GPTQ/AWQ 4-bit for quantized.
 # Adjusted for KV cache overhead (~20% headroom).
+# 
+# GPU TIER GUIDE:
+#   RTX3090/RTX4090 (24GB) → Small models, efficient MoEs
+#   A100 (80GB)           → Mid-size models, 70B quantized
+#   H100 (80GB)           → Large models, multi-GPU setups
+# ─────────────────────────────────────────────────────────────────────────────
 
 declare -A MODEL_CATALOG
 
-# --- Format: "hf_repo|min_vram_gb|gpu_type|gpu_count|quant_note|context_length" ---
+# ═════════════════════════════════════════════════════════════════════════════
+# TIER 1: LIGHTWEIGHT (≤10GB VRAM) — Fast inference, single RTX3090/4090
+# ═════════════════════════════════════════════════════════════════════════════
 
-# Small/Mid (27B-32B) — single GPU
+# Qwen3.5 Series — Excellent reasoning, tool use, multilingual
+MODEL_CATALOG[qwen3.5-0.8b]="Qwen/Qwen3.5-0.8B|4|RTX3090|1|fp16|32768"
+MODEL_CATALOG[qwen3.5-2b]="Qwen/Qwen3.5-2B|6|RTX3090|1|fp16|32768"
+MODEL_CATALOG[qwen3.5-4b]="Qwen/Qwen3.5-4B|10|RTX3090|1|fp16|32768"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TIER 2: COMPACT (10-24GB VRAM) — Single RTX3090/4090
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Qwen3.5 Mid-size
+MODEL_CATALOG[qwen3.5-9b]="Qwen/Qwen3.5-9B|20|RTX3090|1|fp16|32768"
+MODEL_CATALOG[qwen3.5-35b-a3b]="Qwen/Qwen3.5-35B-A3B|24|RTX3090|1|fp16|32768"
+
+# GLM-4/5 Series — Strong general performance
+MODEL_CATALOG[glm4-9b]="THUDM/GLM-4-9B-0414|20|RTX3090|1|fp16|8192"
+MODEL_CATALOG[glm5-9b]="THUDM/GLM-5-9B-0414|20|RTX3090|1|fp16|8192"
+MODEL_CATALOG[glm5.1-9b]="THUDM/GLM-5.1-9B-0414|20|RTX3090|1|fp16|8192"
+
+# Qwen3 MoE — Efficient sparse architecture
+MODEL_CATALOG[qwen3-30b-a3b]="Qwen/Qwen3-30B-A3B|24|RTX3090|1|fp16|32768"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TIER 3: STANDARD (24-48GB VRAM) — Single A100 or RTX4090 with quantization
+# ═════════════════════════════════════════════════════════════════════════════
+
+# DeepSeek R1 Distill — Reasoning specialists
 MODEL_CATALOG[deepseek-r1-distill-qwen-32b]="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B|40|A100|1|fp16|32768"
-MODEL_CATALOG[qwen3-30b-a3b]="Qwen/Qwen3-30B-A3B|24|RTX4090|1|fp16|32768"
+MODEL_CATALOG[deepseek-r1-distill-llama-70b]="deepseek-ai/DeepSeek-R1-Distill-Llama-70B|42|A100|1|4bit|8192"
+
+# GLM-4 Mid-size
 MODEL_CATALOG[glm4-32b]="THUDM/GLM-4-32B-0414|40|A100|1|fp16|32768"
+
+# Yi Series — Strong context handling
 MODEL_CATALOG[yi-34b]="01-ai/Yi-34B|40|A100|1|fp16|4096"
+
+# Command-R — Excellent RAG & tool use
 MODEL_CATALOG[command-r-35b]="CohereForAI/c4ai-command-r-v01|40|A100|1|fp16|131072"
 
-# Qwen3.5 Small (0.8B-9B) — single GPU
-MODEL_CATALOG[qwen3.5-0.8b]="Qwen/Qwen3.5-0.8B|4|RTX4090|1|fp16|32768"
-MODEL_CATALOG[qwen3.5-2b]="Qwen/Qwen3.5-2B|6|RTX4090|1|fp16|32768"
-MODEL_CATALOG[qwen3.5-4b]="Qwen/Qwen3.5-4B|10|RTX4090|1|fp16|32768"
-MODEL_CATALOG[qwen3.5-9b]="Qwen/Qwen3.5-9B|20|RTX4090|1|fp16|32768"
+# Qwen3.5 Large MoE
+MODEL_CATALOG[qwen3.5-27b]="Qwen/Qwen3.5-27B|60|A100|1|fp16|32768"
 
-# GLM Small/Mid
-MODEL_CATALOG[glm4-9b]="THUDM/GLM-4-9B-0414|20|RTX4090|1|fp16|8192"
+# ═════════════════════════════════════════════════════════════════════════════
+# TIER 4: HEAVYWEIGHT (48-160GB VRAM) — Single H100 or multi-GPU A100
+# ═════════════════════════════════════════════════════════════════════════════
 
-# Mid (70B-72B) — single 80GB GPU with 4-bit, or 2x80GB fp16
+# Llama 3 70B — Industry standard
 MODEL_CATALOG[llama3-70b]="meta-llama/Meta-Llama-3-70B|42|A100|1|4bit|8192"
 MODEL_CATALOG[llama3-70b-fp16]="meta-llama/Meta-Llama-3-70B|148|A100|2|fp16|8192"
+
+# Qwen2.5 72B — Long context excellence
 MODEL_CATALOG[qwen2.5-72b]="Qwen/Qwen2.5-72B-Instruct|42|A100|1|4bit|131072"
 MODEL_CATALOG[qwen2.5-72b-fp16]="Qwen/Qwen2.5-72B-Instruct|148|A100|2|fp16|131072"
-MODEL_CATALOG[deepseek-r1-distill-llama-70b]="deepseek-ai/DeepSeek-R1-Distill-Llama-70B|42|A100|1|4bit|8192"
-MODEL_CATALOG[gemma3-27b]="google/gemma-3-27b-it|34|RTX4090|1|fp16|131072"
+
+# Mixtral 8x22B — MoE efficiency at scale
 MODEL_CATALOG[mixtral-8x22b]="mistralai/Mixtral-8x22B-v0.1|92|A100|2|4bit|65536"
+
+# Command-R Plus — Enterprise-grade RAG
 MODEL_CATALOG[command-r-plus-104b]="CohereForAI/c4ai-command-r-plus|60|H100|1|4bit|131072"
 
-# Large (110B-235B) — multi-GPU
+# Qwen3.5 Large MoE
+MODEL_CATALOG[qwen3.5-122b-a10b]="Qwen/Qwen3.5-122B-A10B|80|H100|1|fp16|32768"
+MODEL_CATALOG[qwen3.5-122b-a10b-4bit]="Qwen/Qwen3.5-122B-A10B|40|A100|1|4bit|32768"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TIER 5: FRONTIER (160GB+ VRAM) — Multi-GPU H100 clusters
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Qwen3 Massive MoE
 MODEL_CATALOG[qwen3-235b]="Qwen/Qwen3-235B-A22B|136|H100|2|fp16|32768"
 MODEL_CATALOG[qwen3-235b-4bit]="Qwen/Qwen3-235B-A22B|72|H100|1|4bit|32768"
+
+# Qwen3.5 Massive MoE
+MODEL_CATALOG[qwen3.5-397b-a17b]="Qwen/Qwen3.5-397B-A17B|240|H100|3|fp16|32768"
+MODEL_CATALOG[qwen3.5-397b-a17b-4bit]="Qwen/Qwen3.5-397B-A17B|80|H100|1|4bit|32768"
+
+# DeepSeek R1/V3 — Reasoning powerhouses
 MODEL_CATALOG[deepseek-r1]="deepseek-ai/DeepSeek-R1|670|H100|8|fp16|131072"
 MODEL_CATALOG[deepseek-r1-4bit]="deepseek-ai/DeepSeek-R1|180|H100|3|4bit|131072"
 MODEL_CATALOG[deepseek-v3]="deepseek-ai/DeepSeek-V3|670|H100|8|fp16|131072"
 MODEL_CATALOG[deepseek-v3-4bit]="deepseek-ai/DeepSeek-V3|180|H100|3|4bit|131072"
-MODEL_CATALOG[llama4-maverick-400b]="meta-llama/Llama-4-Maverick-17B-128E|420|H100|6|fp16|131072"
-MODEL_CATALOG[llama4-scout-109b]="meta-llama/Llama-4-Scout-17B-16E|120|H100|2|fp16|131072"
-MODEL_CATALOG[qwen2.5-1m]="Qwen/Qwen2.5-1M|160|H100|2|4bit|1000000"
-MODEL_CATALOG[glm4-1m]="THUDM/GLM-4-1M-0414|160|H100|2|4bit|1000000"
 
-# GLM-5.x (Large MoE models)
-MODEL_CATALOG[glm5-9b]="THUDM/GLM-5-9B-0414|20|RTX4090|1|fp16|8192"
-MODEL_CATALOG[glm5.1-9b]="THUDM/GLM-5.1-9B-0414|20|RTX4090|1|fp16|8192"
+# GLM-5.1 — Massive scale
 MODEL_CATALOG[glm5.1]="THUDM/GLM-5.1-0414|800|H100|10|fp16|131072"
 MODEL_CATALOG[glm5.1-4bit]="THUDM/GLM-5.1-0414|250|H100|4|4bit|131072"
 
-# Qwen3.5 Large (27B-397B MoE)
-MODEL_CATALOG[qwen3.5-27b]="Qwen/Qwen3.5-27B|60|H100|1|fp16|32768"
-MODEL_CATALOG[qwen3.5-35b-a3b]="Qwen/Qwen3.5-35B-A3B|24|RTX4090|1|fp16|32768"
-MODEL_CATALOG[qwen3.5-122b-a10b]="Qwen/Qwen3.5-122B-A10B|80|H100|1|fp16|32768"
-MODEL_CATALOG[qwen3.5-122b-a10b-4bit]="Qwen/Qwen3.5-122B-A10B|40|H100|1|4bit|32768"
-MODEL_CATALOG[qwen3.5-397b-a17b]="Qwen/Qwen3.5-397B-A17B|240|H100|3|fp16|32768"
-MODEL_CATALOG[qwen3.5-397b-a17b-4bit]="Qwen/Qwen3.5-397B-A17B|80|H100|1|4bit|32768"
+# ═════════════════════════════════════════════════════════════════════════════
+# SPECIALTY: LONG CONTEXT (1M+ tokens)
+# ═════════════════════════════════════════════════════════════════════════════
+
+MODEL_CATALOG[qwen2.5-1m]="Qwen/Qwen2.5-1M|160|H100|2|4bit|1000000"
+MODEL_CATALOG[glm4-1m]="THUDM/GLM-4-1M-0414|160|H100|2|4bit|1000000"
 
 # ── State file ───────────────────────────────────────────────────────────────
 STATE_DIR="${HOME}/.lium-inference"
 STATE_FILE="${STATE_DIR}/state.json"
+ENDPOINT_FILE=".lium-endpoint.json"
+FIRE_AND_FORGET=false
+API_KEY=""
 mkdir -p "${STATE_DIR}"
 
 save_state() {
@@ -138,6 +192,27 @@ load_state() {
     fi
 }
 
+# ── Write endpoint file (for fire-and-forget consumers like OpenClaw) ────────
+write_endpoint_file() {
+    cat > "${ENDPOINT_FILE}" <<EOF
+{
+  "endpoint": "${ENDPOINT_URL}/v1",
+  "api_key": "${API_KEY}",
+  "model": "${HF_REPO}",
+  "model_key": "${SELECTED_MODEL}",
+  "pod_id": "${POD_NAME}",
+  "gpu": "${GPU_TYPE} x${GPU_COUNT}",
+  "port": "${ENDPOINT_PORT}",
+  "ttl": "${POD_TTL:-none}",
+  "created_at": "$(date -Iseconds)"
+}
+EOF
+    ok "Endpoint file written to ${ENDPOINT_FILE}"
+    info "  endpoint: ${ENDPOINT_URL}/v1"
+    info "  api_key:  ${API_KEY}"
+    info "  model:    ${HF_REPO}"
+}
+
 # ── Prerequisites check ─────────────────────────────────────────────────────
 check_prereqs() {
     local missing=0
@@ -159,63 +234,96 @@ check_prereqs() {
 # ── Parse lium ls output and extract available GPUs ───────────────────────────
 # Global associative array to store available GPU counts
 declare -A AVAILABLE_GPUS
+# Store executor info: EXECUTOR_INFO[id]="gpu_type:price"
+declare -A EXECUTOR_INFO
+# Store cheapest executor per GPU type: CHEAPEST_EXECUTOR[gpu_type]=id
+declare -A CHEAPEST_EXECUTOR
+# Track max GPUs available on a single executor (pod) per GPU type
+# This is critical for multi-GPU models — they need all GPUs on the SAME pod
+declare -A MAX_GPUS_PER_EXECUTOR
 declare -A GPU_VRAM_MAP=(
+    ["B300"]=269
+    ["B200"]=192
+    ["H200"]=140
     ["H100"]=80
     ["A100"]=80
+    ["Edition"]=96
     ["A6000"]=48
+    ["RTX6000"]=48
     ["RTX5090"]=32
+    ["V100"]=32
     ["RTX4090"]=24
     ["RTX3090"]=24
-    ["RTX6000"]=48
-    ["V100"]=32
-    ["T4"]=16
+    ["L40"]=48
     ["L4"]=24
     ["A10"]=24
     ["A10G"]=24
+    ["T4"]=16
 )
 
 parse_lium_ls() {
     AVAILABLE_GPUS=()
+    EXECUTOR_INFO=()
+    CHEAPEST_EXECUTOR=()
+    MAX_GPUS_PER_EXECUTOR=()
     local lium_output
-    # No port filter - we'll discover the assigned port after pod creation
-    lium_output=$(lium ls 2>/dev/null) || return 1
+    # Use --sort price_gpu to get cheapest GPUs first
+    lium_output=$(lium ls --sort price_gpu 2>/dev/null) || return 1
     
     if [[ -z "$lium_output" ]]; then
         return 1
     fi
     
     # Parse lium ls output - format varies, try multiple patterns
-    # Pattern 1: "GPU_TYPE  COUNT" (space-separated)
-    # Pattern 2: Table with headers
-    # Pattern 3: "N x GPU_TYPE" format
+    # Output is sorted by price_gpu (cheapest first)
+    # Expected columns: ID, GPU, Price, Location (varies by lium version)
     
     while IFS= read -r line; do
         # Skip header lines and empty lines
         [[ -z "$line" ]] && continue
         [[ "$line" =~ ^(GPU|Name|Type|ID|Available|---|\||\+) ]] && continue
         
-        # Try to extract GPU type and count from various formats
+        # Try to extract GPU type, executor ID, and price from various formats
         local gpu_type=""
+        local executor_id=""
+        local price=""
         local count=0
         
         # Normalize line to uppercase for matching
         local line_upper="${line^^}"
+        # Replace Unicode × (U+00D7, UTF-8 C3 97) with ASCII X for regex compatibility
+        line_upper="${line_upper//×/X}"
+        
+        # Try to extract executor ID (usually first column, alphanumeric)
+        # Format: "executor_id  GPU_TYPE  price  ..." or "ID | GPU | Price | ..."
+        if [[ "$line" =~ ^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]+ ]]; then
+            executor_id="${BASH_REMATCH[1]}"
+        fi
+        
+        # Try to extract price (looks like $X.XX or X.XX format)
+        if [[ "$line" =~ \$?([0-9]+\.[0-9]+) ]]; then
+            price="${BASH_REMATCH[1]}"
+        fi
         
         # Format: "2 x H100" or "H100 (2 available)" - case insensitive, handles spaces
         # Also match standalone numbers like "5090", "4090", "3090", "6000" without RTX prefix
-        if [[ "$line_upper" =~ ([0-9]+)[[:space:]]*X[[:space:]]*(H100|A100|A6000|RTX.?5090|RTX.?4090|RTX.?3090|RTX.?6000|5090|4090|3090|6000|V100|T4|L4|A10|A10G) ]]; then
+        if [[ "$line_upper" =~ ([0-9]+)[[:space:]]*X[[:space:]]*(B300|B200|H200|H100|A100|A6000|RTX.?5090|RTX.?4090|RTX.?3090|RTX.?6000|L40S?|Edition|5090|4090|3090|6000|V100|T4|L4|A10|A10G) ]]; then
             count="${BASH_REMATCH[1]}"
             # Normalize GPU type (remove spaces, standardize naming)
             gpu_type="${BASH_REMATCH[2]}"
             gpu_type="${gpu_type// /}"  # Remove any spaces
             # Add RTX prefix if missing for consumer GPUs
             [[ "$gpu_type" =~ ^(5090|4090|3090|6000)$ ]] && gpu_type="RTX$gpu_type"
+            # Normalize L40S -> L40 for VRAM/rank lookups (same VRAM)
+            [[ "$gpu_type" == "L40S" ]] && gpu_type="L40"
         # Format: "H100" with count in another column - case insensitive
-        elif [[ "$line_upper" =~ (H100|A100|A6000|RTX.?5090|RTX.?4090|RTX.?3090|RTX.?6000|5090|4090|3090|6000|V100|T4|L4|A10|A10G) ]]; then
+        elif [[ "$line_upper" =~ (B300|B200|H200|H100|A100|A6000|RTX.?5090|RTX.?4090|RTX.?3090|RTX.?6000|L40S?|Edition|5090|4090|3090|6000|V100|T4|L4|A10|A10G) ]]; then
             gpu_type="${BASH_REMATCH[1]}"
             gpu_type="${gpu_type// /}"  # Remove any spaces
             # Add RTX prefix if missing for consumer GPUs
             [[ "$gpu_type" =~ ^(5090|4090|3090|6000)$ ]] && gpu_type="RTX$gpu_type"
+            # Normalize L40S -> L40 for VRAM/rank lookups (same VRAM)
+            [[ "$gpu_type" == "L40S" ]] && gpu_type="L40"
             # Look for a number in the line
             if [[ "$line" =~ ([0-9]+)[[:space:]]*(available|pods?|GPUs?|$) ]]; then
                 count="${BASH_REMATCH[1]}"
@@ -231,6 +339,20 @@ parse_lium_ls() {
             else
                 AVAILABLE_GPUS[$gpu_type]=$count
             fi
+            
+            # Track max GPUs on a single executor (pod) — critical for multi-GPU models
+            if [[ "$count" -gt "${MAX_GPUS_PER_EXECUTOR[$gpu_type]:-0}" ]]; then
+                MAX_GPUS_PER_EXECUTOR[$gpu_type]=$count
+            fi
+            
+            # Store executor info if we have ID and price
+            if [[ -n "$executor_id" && -n "$price" ]]; then
+                EXECUTOR_INFO[$executor_id]="${gpu_type}:${price}"
+                # Track cheapest executor for each GPU type (first one wins since sorted by price)
+                if [[ -z "${CHEAPEST_EXECUTOR[$gpu_type]:-}" ]]; then
+                    CHEAPEST_EXECUTOR[$gpu_type]="$executor_id"
+                fi
+            fi
         fi
     done <<< "$lium_output"
     
@@ -240,10 +362,15 @@ parse_lium_ls() {
 # ── GPU Hierarchy (better GPUs can substitute for lesser ones) ───────────────
 # Higher rank = more powerful. Used to determine if a GPU can substitute another.
 declare -A GPU_RANK=(
+    ["B300"]=115
+    ["B200"]=110
+    ["H200"]=105
     ["H100"]=100
     ["A100"]=90
+    ["Edition"]=85
     ["A6000"]=70
     ["RTX6000"]=70
+    ["L40"]=68
     ["RTX5090"]=65
     ["RTX4090"]=60
     ["RTX3090"]=55
@@ -284,22 +411,31 @@ can_run_model() {
     # Check each available GPU type
     for avail_gpu in "${!AVAILABLE_GPUS[@]}"; do
         local avail_count="${AVAILABLE_GPUS[$avail_gpu]}"
+        local max_per_pod="${MAX_GPUS_PER_EXECUTOR[$avail_gpu]:-$avail_count}"
         local gpu_vram="${GPU_VRAM_MAP[$avail_gpu]:-0}"
-        local total_vram=$((gpu_vram * avail_count))
         
         # First check: GPU type compatibility (hierarchy-based substitution)
-        if ! gpu_can_substitute "$avail_gpu" "$gpu_type"; then
-            continue  # This GPU type is not suitable, try next
+        if gpu_can_substitute "$avail_gpu" "$gpu_type"; then
+            # Check if a single pod has enough GPUs AND total VRAM
+            local total_vram=$((gpu_vram * max_per_pod))
+            if [[ "$max_per_pod" -ge "$gpu_count" && "$total_vram" -ge "$min_vram" ]]; then
+                return 0
+            fi
+            
+            # Check if a single GPU of this type has enough VRAM (single-GPU models)
+            if [[ "$gpu_vram" -ge "$min_vram" && "$max_per_pod" -ge 1 ]]; then
+                return 0
+            fi
         fi
         
-        # Check if we have enough GPUs of this type
-        if [[ "$avail_count" -ge "$gpu_count" && "$total_vram" -ge "$min_vram" ]]; then
-            return 0
-        fi
-        
-        # Check if a single GPU of this type has enough VRAM
-        if [[ "$gpu_vram" -ge "$min_vram" && "$avail_count" -ge 1 ]]; then
-            return 0
+        # VRAM-based fallback: calculate how many GPUs of this type we'd need
+        # to satisfy the model's VRAM requirement, then check if a single pod has that many
+        if [[ "$gpu_vram" -gt 0 ]]; then
+            local needed_count=$(( (min_vram + gpu_vram - 1) / gpu_vram ))  # ceil division
+            local total_vram=$((gpu_vram * needed_count))
+            if [[ "$max_per_pod" -ge "$needed_count" && "$total_vram" -ge "$min_vram" ]]; then
+                return 0
+            fi
         fi
     done
     
@@ -322,7 +458,12 @@ show_available_gpus() {
             for gpu in "${!AVAILABLE_GPUS[@]}"; do
                 local vram="${GPU_VRAM_MAP[$gpu]:-?}"
                 local count="${AVAILABLE_GPUS[$gpu]}"
-                printf "  ${GREEN}✓${NC} %s x%d (%s GB each, %s GB total)\n" "$gpu" "$count" "$vram" "$((vram * count))"
+                local max_pod="${MAX_GPUS_PER_EXECUTOR[$gpu]:-$count}"
+                if [[ "$max_pod" -ge 2 ]]; then
+                    printf "  ${GREEN}✓${NC} %s x%d (%s GB each, %s GB total) [up to %d per pod = %s GB]\n" "$gpu" "$count" "$vram" "$((vram * count))" "$max_pod" "$((vram * max_pod))"
+                else
+                    printf "  ${GREEN}✓${NC} %s x%d (%s GB each, %s GB total)\n" "$gpu" "$count" "$vram" "$((vram * count))"
+                fi
             done | sort
             echo ""
         fi
@@ -452,43 +593,59 @@ find_gpu() {
     local gpu_list=""
 
     if [[ "$gpu_available" -ge "$GPU_COUNT" ]]; then
-        # We have enough of the required GPU type
-        gpu_list=$(lium ls 2>/dev/null | grep -i "${GPU_TYPE}" || true)
-    else
+        # We have enough of the required GPU type — but check per-pod too
+        local max_per_pod="${MAX_GPUS_PER_EXECUTOR[$GPU_TYPE]:-$gpu_available}"
+        if [[ "$max_per_pod" -ge "$GPU_COUNT" ]]; then
+            gpu_list=$(lium ls 2>/dev/null | grep -i "${GPU_TYPE}" || true)
+        else
+            warn "Have ${gpu_available}x ${GPU_TYPE} total but max ${max_per_pod} per pod (need ${GPU_COUNT}). Trying alternatives..."
+            gpu_available=0  # Force fallback path
+        fi
+    fi
+    
+    if [[ "$gpu_available" -lt "$GPU_COUNT" ]]; then
         warn "No ${GPU_TYPE} GPUs currently available (need ${GPU_COUNT}, have ${gpu_available}). Trying alternatives..."
 
-        # Fallback GPU hierarchy: H100 > A100 80GB > A6000 > RTX4090 > A100 40GB
+        # Fallback GPU hierarchy: B200 > H100 > A100 80GB > A6000 > L40 > RTX6000 > RTX5090 > RTX4090 > RTX3090
         local -a FALLBACKS=()
         case "$GPU_TYPE" in
-            H100)  FALLBACKS=("A100" "A6000" "RTX4090") ;;
-            A100)  FALLBACKS=("H100" "A6000" "RTX4090") ;;
-            A6000) FALLBACKS=("A100" "H100" "RTX4090") ;;
-            RTX4090) FALLBACKS=("A6000" "A100" "H100") ;;
-            *)     FALLBACKS=("H100" "A100" "A6000" "RTX4090") ;;
+            B200)    FALLBACKS=("H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+            H100)    FALLBACKS=("B200" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+            A100)    FALLBACKS=("B200" "H100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+            A6000)   FALLBACKS=("B200" "H100" "A100" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+            L40)     FALLBACKS=("B200" "H100" "A100" "A6000" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+            RTX6000) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX5090" "RTX4090" "RTX3090") ;;
+            RTX5090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX4090" "RTX3090") ;;
+            RTX4090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX3090") ;;
+            RTX3090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090") ;;
+            *)       FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
         esac
 
         for fb in "${FALLBACKS[@]}"; do
             local fb_count="${AVAILABLE_GPUS[$fb]:-0}"
-            info "  Trying ${fb}... (${fb_count} available)"
-            if [[ "$fb_count" -ge "$GPU_COUNT" ]]; then
-                # Check if fallback GPU has enough VRAM for our model
-                local fb_vram
-                case "$fb" in
-                    H100)    fb_vram=80 ;;
-                    A100)    fb_vram=80 ;;
-                    A6000)   fb_vram=48 ;;
-                    RTX4090) fb_vram=24 ;;
-                    *)       fb_vram=0 ;;
-                esac
-                local total_vram=$((fb_vram * GPU_COUNT))
-                if [[ "$total_vram" -ge "$MIN_VRAM" ]]; then
-                    ok "Found ${fb} GPUs with sufficient VRAM (${total_vram} GB >= ${MIN_VRAM} GB)"
-                    GPU_TYPE="$fb"
-                    gpu_list=$(lium ls 2>/dev/null | grep -i "${fb}" || true)
-                    break
-                else
-                    warn "  ${fb} x${GPU_COUNT} = ${total_vram} GB < ${MIN_VRAM} GB needed"
-                fi
+            local fb_max_per_pod="${MAX_GPUS_PER_EXECUTOR[$fb]:-$fb_count}"
+            info "  Trying ${fb}... (${fb_count} total, ${fb_max_per_pod} per pod)"
+            
+            # Calculate how many of this fallback GPU type we need
+            local fb_vram="${GPU_VRAM_MAP[$fb]:-0}"
+            if [[ "$fb_vram" -eq 0 ]]; then
+                continue
+            fi
+            local needed_count=$(( (MIN_VRAM + fb_vram - 1) / fb_vram ))  # ceil division
+            if [[ "$needed_count" -lt 1 ]]; then
+                needed_count=1
+            fi
+            
+            if [[ "$fb_max_per_pod" -ge "$needed_count" ]]; then
+                local total_vram=$((fb_vram * needed_count))
+                ok "Found ${fb} GPUs with sufficient VRAM (${needed_count}x${fb_vram}GB = ${total_vram} GB >= ${MIN_VRAM} GB)"
+                GPU_TYPE="$fb"
+                GPU_COUNT="$needed_count"
+                gpu_list=$(lium ls 2>/dev/null | grep -i "${fb}" || true)
+                break
+            else
+                local total_vram=$((fb_vram * fb_max_per_pod))
+                warn "  ${fb} max ${fb_max_per_pod}/pod, need ${needed_count} (${total_vram} GB < ${MIN_VRAM} GB needed)"
             fi
         done
 
@@ -549,7 +706,15 @@ launch_pod() {
     # Trim to reasonable length
     POD_NAME="${POD_NAME:0:40}"
 
-    info "Launching pod '${POD_NAME}' on ${GPU_TYPE} x${GPU_COUNT}..."
+    # Find cheapest executor for this GPU type
+    local cheapest_executor="${CHEAPEST_EXECUTOR[$GPU_TYPE]:-}"
+    local executor_info=""
+    if [[ -n "$cheapest_executor" ]]; then
+        executor_info="${EXECUTOR_INFO[$cheapest_executor]:-}"
+        info "Launching pod '${POD_NAME}' on ${GPU_TYPE} x${GPU_COUNT} (cheapest executor: ${cheapest_executor})..."
+    else
+        info "Launching pod '${POD_NAME}' on ${GPU_TYPE} x${GPU_COUNT}..."
+    fi
 
     # Build TTL flag if set
     local ttl_flag=""
@@ -562,11 +727,16 @@ launch_pod() {
     # Don't specify port - let Lium assign any available port
     # Pipe 'yes' to auto-confirm the interactive prompt
     # NOTE: Disable pipefail because 'yes' gets SIGPIPE when lium exits
+    # NOTE: --jupyter bypasses broken default templates on some executors
     set +o pipefail
-    if [[ "$GPU_COUNT" -gt 1 ]]; then
-        launch_output=$(yes | lium up --gpu "${GPU_TYPE}" -c "${GPU_COUNT}" --name "${POD_NAME}" ${ttl_flag} 2>&1) || true
+    if [[ -n "$cheapest_executor" ]]; then
+        # Use specific executor ID for cheapest option
+        # --jupyter bypasses broken default templates on some executors
+        launch_output=$(yes | lium up "${cheapest_executor}" --name "${POD_NAME}" --jupyter ${ttl_flag} 2>&1) || true
+    elif [[ "$GPU_COUNT" -gt 1 ]]; then
+        launch_output=$(yes | lium up --gpu "${GPU_TYPE}" -c "${GPU_COUNT}" --name "${POD_NAME}" --jupyter ${ttl_flag} 2>&1) || true
     else
-        launch_output=$(yes | lium up --gpu "${GPU_TYPE}" --name "${POD_NAME}" ${ttl_flag} 2>&1) || true
+        launch_output=$(yes | lium up --gpu "${GPU_TYPE}" --name "${POD_NAME}" --jupyter ${ttl_flag} 2>&1) || true
     fi
     launch_rc=$?
     set -o pipefail
@@ -610,31 +780,53 @@ wait_for_pod() {
     local max_wait=120
     local elapsed=0
     while [[ "$elapsed" -lt "$max_wait" ]]; do
-        local status
-        status=$(lium ps 2>/dev/null | grep "${POD_NAME}" | awk '{print $3}' || true)
-        if [[ "$status" == *"running"* || "$status" == *"Running"* ]]; then
-            ok "Pod is running!"
-            return 0
+        local pod_line
+        pod_line=$(lium ps 2>/dev/null | grep "${POD_NAME}" || true)
+        # Check if pod appears in output (it exists) and look for running status
+        # lium ps format varies, so check the whole line for status indicators
+        if [[ -n "$pod_line" ]]; then
+            # Pod exists - check for running status in any column
+            if echo "$pod_line" | grep -qi "running"; then
+                ok "Pod is running!"
+                return 0
+            fi
+            # Also check for 'active' or 'ready' as alternative status words
+            if echo "$pod_line" | grep -qi "active\|ready"; then
+                ok "Pod is active!"
+                return 0
+            fi
         fi
         sleep 5
         elapsed=$((elapsed + 5))
-        printf "  [%ds / %ds]\r" "$elapsed" "$max_wait"
+        printf "  [%ds / %ds] Waiting for pod...\n" "$elapsed" "$max_wait"
     done
-    warn "Pod not yet running after ${max_wait}s. Check 'lium ps' manually."
+    # Even if we timeout, check if pod exists - it might be usable anyway
+    local pod_check
+    pod_check=$(lium ps 2>/dev/null | grep "${POD_NAME}" || true)
+    if [[ -n "$pod_check" ]]; then
+        warn "Pod exists but status unclear. Proceeding anyway..."
+        return 0
+    fi
+    err "Pod '${POD_NAME}' not found after ${max_wait}s!"
+    return 1
 }
 
 # ── Deploy inference server ─────────────────────────────────────────────────
 deploy_inference() {
     info "Deploying vLLM inference server for ${HF_REPO}..."
 
+    # Generate a one-off API key for this pod session
+    API_KEY=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
+    info "Generated API key: ${API_KEY}"
+
     # Build the vLLM launch command
     local VLLM_CMD="pip install vllm && "
 
     # For multi-GPU, use tensor parallel
     if [[ "$GPU_COUNT" -gt 1 ]]; then
-        VLLM_CMD+="vllm serve ${HF_REPO} --tensor-parallel-size ${GPU_COUNT} --port ${POD_PORT} --max-model-len ${CTX_LEN} --trust-remote-code"
+        VLLM_CMD+="vllm serve ${HF_REPO} --tensor-parallel-size ${GPU_COUNT} --port ${POD_PORT} --max-model-len ${CTX_LEN} --trust-remote-code --api-key ${API_KEY}"
     else
-        VLLM_CMD+="vllm serve ${HF_REPO} --port ${POD_PORT} --max-model-len ${CTX_LEN} --trust-remote-code"
+        VLLM_CMD+="vllm serve ${HF_REPO} --port ${POD_PORT} --max-model-len ${CTX_LEN} --trust-remote-code --api-key ${API_KEY}"
     fi
 
     # Add quantization flag if needed
@@ -645,11 +837,46 @@ deploy_inference() {
     info "Running inference server setup on pod..."
     info "  Command: ${VLLM_CMD}"
 
-    # Execute on pod via lium exec (non-blocking: nohup in background)
-    lium exec "${POD_NAME}" "nohup bash -c '${VLLM_CMD}' > /root/vllm.log 2>&1 &"
+    # Create a startup script on the pod using echo (more reliable than heredoc)
+    info "Creating startup script on pod..."
+    lium exec "${POD_NAME}" "echo '#!/bin/bash' > /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'set -e' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo === Starting vLLM deployment === > /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo Timestamp: \$(date) >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo Model: ${HF_REPO} >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo Port: ${POD_PORT} >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo GPU Count: ${GPU_COUNT} >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo === GPU Check === >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'nvidia-smi >> /root/vllm.log 2>&1 || echo WARNING: nvidia-smi failed >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo === Installing vLLM === >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'pip install vllm >> /root/vllm.log 2>&1' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo 'echo === Starting vLLM server === >> /root/vllm.log' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "echo '${VLLM_CMD}' >> /root/start-vllm.sh"
+    lium exec "${POD_NAME}" "chmod +x /root/start-vllm.sh"
+
+    # Run the script in background with nohup
+    info "Starting vLLM in background..."
+    lium exec "${POD_NAME}" "nohup /root/start-vllm.sh >> /root/vllm.log 2>&1 &"
+
+    # Show initial log output so user can see it's working
+    sleep 2
+    info "Initial log output:"
+    lium exec "${POD_NAME}" "cat /root/vllm.log" 2>/dev/null || echo "  (log not yet available)"
+
+    # Verify the process started
+    sleep 3
+    local proc_check
+    proc_check=$(lium exec "${POD_NAME}" "pgrep -f 'vllm|start-vllm' || echo 'NOT_FOUND'" 2>/dev/null || true)
+    if [[ "$proc_check" == "NOT_FOUND" || -z "$proc_check" ]]; then
+        warn "vLLM process may not have started. Check log:"
+        lium exec "${POD_NAME}" "cat /root/vllm.log" 2>/dev/null || true
+    else
+        ok "vLLM process started (PID: ${proc_check})"
+    fi
 
     ok "Inference server starting in background on pod."
     info "Model download + loading may take 5-15 minutes depending on model size."
+    info "Monitor progress with: lium exec ${POD_NAME} 'tail -f /root/vllm.log'"
 }
 
 # ── Wait for endpoint ───────────────────────────────────────────────────────
@@ -683,8 +910,9 @@ wait_for_endpoint() {
         ENDPOINT_URL="http://${POD_IP}:${ENDPOINT_PORT}"
     else
         # Fallback: use lium ssh port forwarding info
-        warn "Using SSH tunnel for endpoint access."
-        ENDPOINT_URL="ssh-tunnel"
+        err "Could not determine pod IP address. Cannot proceed."
+        err "Try: lium ps to see pod status, or lium ssh ${POD_NAME} 'hostname -I'"
+        return 1
     fi
 
     # Wait for vLLM to be ready
@@ -699,20 +927,23 @@ wait_for_endpoint() {
             return 0
         fi
 
-        # Show progress from log
+        # Show progress from log (use newline for visibility)
         local last_log
         last_log=$(lium exec "${POD_NAME}" "tail -1 /root/vllm.log" 2>/dev/null || true)
         if [[ -n "$last_log" ]]; then
-            printf "  [%3dm] %s\r" "$((elapsed/60))" "${last_log:0:80}"
+            printf "  [%3dm] %s\n" "$((elapsed/60))" "${last_log:0:100}"
+        else
+            printf "  [%3dm] Waiting for vLLM to start...\n" "$((elapsed/60))"
         fi
 
         sleep 10
         elapsed=$((elapsed + 10))
     done
 
-    warn "Endpoint not ready after ${max_wait}s. Check manually:"
-    warn "  lium ssh ${POD_NAME}"
-    warn "  tail -f /root/vllm.log"
+    err "Endpoint not ready after ${max_wait}s. Check manually:"
+    err "  lium ssh ${POD_NAME}"
+    err "  tail -f /root/vllm.log"
+    return 1
 }
 
 # ── Print endpoint info ─────────────────────────────────────────────────────
@@ -762,6 +993,9 @@ print_endpoint_info() {
 
     # Save state
     save_state
+
+    # Write endpoint file for fire-and-forget consumers (always write it)
+    write_endpoint_file
 }
 
 # ── Configure OA endpoint ───────────────────────────────────────────────────
@@ -794,6 +1028,7 @@ EOF
     # Also set environment variables for current session
     export OA_ENDPOINT="${ENDPOINT_URL}/v1"
     export OA_MODEL="${HF_REPO}"
+    export OA_API_KEY="${API_KEY}"
 
     # Persist to shell profile
     local profile="${HOME}/.bashrc"
@@ -802,7 +1037,8 @@ EOF
         echo "# Open Agent inference endpoint (set by lium-inference.sh)" >> "${profile}"
         echo "export OA_ENDPOINT=\"${ENDPOINT_URL}/v1\"" >> "${profile}"
         echo "export OA_MODEL=\"${HF_REPO}\"" >> "${profile}"
-        info "Added OA_ENDPOINT and OA_MODEL to ${profile}"
+        echo "export OA_API_KEY=\"${API_KEY}\"" >> "${profile}"
+        info "Added OA_ENDPOINT, OA_MODEL, and OA_API_KEY to ${profile}"
     fi
 }
 
@@ -856,6 +1092,10 @@ stop_pod() {
     sed -i '/# Open Agent inference endpoint/d' "${HOME}/.bashrc" 2>/dev/null || true
     sed -i '/export OA_ENDPOINT=/d' "${HOME}/.bashrc" 2>/dev/null || true
     sed -i '/export OA_MODEL=/d' "${HOME}/.bashrc" 2>/dev/null || true
+    sed -i '/export OA_API_KEY=/d' "${HOME}/.bashrc" 2>/dev/null || true
+
+    # Remove endpoint file
+    rm -f "${ENDPOINT_FILE}"
 
     ok "Pod removed and state cleaned up."
 }
@@ -875,11 +1115,19 @@ main() {
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --list, -l          List available models"
-            echo "  --model NAME, -m    Select model by name"
-            echo "  --status, -s        Show current pod status"
-            echo "  --stop              Stop and remove the pod"
-            echo "  --help, -h          Show this help"
+            echo "  --list, -l              List available models"
+            echo "  --model NAME, -m        Select model by name"
+            echo "  --fire-and-forget, -f   Non-interactive: launch, write .lium-endpoint.json, exit"
+            echo "  --ttl DURATION, -t      Pod TTL (e.g. 1h, 2h, 4h, 8h, 24h). Default: 2h"
+            echo "  --status, -s            Show current pod status"
+            echo "  --stop                  Stop and remove the pod"
+            echo "  --help, -h              Show this help"
+            echo ""
+            echo "Fire-and-forget mode:"
+            echo "  ./lium-inference.sh -f -m llama3.1-8b"
+            echo "  ./lium-inference.sh -f -m qwen3-32b -t 4h"
+            echo "  Writes .lium-endpoint.json with endpoint URL, API key, and model info."
+            echo "  OpenClaw or any client can read this file to connect."
             echo ""
             echo "Run without arguments for interactive model selection."
             exit 0
@@ -894,61 +1142,133 @@ main() {
     check_prereqs
     show_available_gpus
 
-    case "${1:-}" in
-        --model|-m)
-            SELECTED_MODEL="${2:-}"
-            if [[ -z "$SELECTED_MODEL" ]]; then
-                err "--model requires a model name. Use --list to see options."
-                exit 1
-            fi
-            ;;
-        --status|-s)
-            show_status
-            exit 0
-            ;;
-        --stop)
-            stop_pod
-            exit 0
-            ;;
-        "")
-            # Interactive mode
-            list_models
-            pick_model
-            ;;
-        *)
-            # Treat first arg as model name shorthand
-            SELECTED_MODEL="$1"
-            ;;
-    esac
+    # Parse all arguments
+    local CUSTOM_TTL=""
+    SELECTED_MODEL=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --model|-m)
+                SELECTED_MODEL="${2:-}"
+                if [[ -z "$SELECTED_MODEL" ]]; then
+                    err "--model requires a model name. Use --list to see options."
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --fire-and-forget|-f)
+                FIRE_AND_FORGET=true
+                shift
+                ;;
+            --ttl|-t)
+                CUSTOM_TTL="${2:-}"
+                if [[ -z "$CUSTOM_TTL" ]]; then
+                    err "--ttl requires a duration (e.g. 1h, 2h, 4h)"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --status|-s)
+                show_status
+                exit 0
+                ;;
+            --stop)
+                stop_pod
+                exit 0
+                ;;
+            "")
+                shift
+                ;;
+            *)
+                # Treat as model name shorthand (only if no --model given)
+                if [[ -z "$SELECTED_MODEL" ]]; then
+                    SELECTED_MODEL="$1"
+                else
+                    err "Unknown option: $1"
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # If no model selected, go interactive
+    if [[ -z "$SELECTED_MODEL" ]]; then
+        list_models
+        pick_model
+    fi
 
     # Parse the selected model's specs
     parse_model
 
+    # Refresh GPU availability — data from earlier parse_lium_ls() may be stale
+    # after the user spent time in the interactive picker
+    info "Refreshing GPU availability data..."
+    parse_lium_ls 2>/dev/null || true
+
     # Find available GPUs
     find_gpu
 
-    # Ask for duration (cost control)
-    ask_duration
+    # Duration / TTL
+    if [[ -n "$CUSTOM_TTL" ]]; then
+        POD_TTL="$CUSTOM_TTL"
+        ok "Pod TTL set to ${POD_TTL}"
+    elif [[ "$FIRE_AND_FORGET" == true ]]; then
+        POD_TTL="2h"
+        info "Fire-and-forget mode: defaulting to 2h TTL"
+    else
+        ask_duration
+    fi
 
-    # Confirm before launching
-    echo ""
-    read -rp "$(echo -e ${BOLD}Launch pod with ${GPU_TYPE} x${GPU_COUNT} for ${SELECTED_MODEL}? [Y/n]: ${NC})" confirm
-    confirm="${confirm:-Y}"
-    if [[ ! "$confirm" =~ ^[Yy] ]]; then
-        info "Cancelled."
-        exit 0
+    # Confirm before launching (skip in fire-and-forget)
+    if [[ "$FIRE_AND_FORGET" != true ]]; then
+        echo ""
+        read -rp "$(echo -e ${BOLD}Launch pod with ${GPU_TYPE} x${GPU_COUNT} for ${SELECTED_MODEL}? [Y/n]: ${NC})" confirm
+        confirm="${confirm:-Y}"
+        if [[ ! "$confirm" =~ ^[Yy] ]]; then
+            info "Cancelled."
+            exit 0
+        fi
+    else
+        info "Fire-and-forget: launching ${GPU_TYPE} x${GPU_COUNT} for ${SELECTED_MODEL} (TTL: ${POD_TTL:-none})"
     fi
 
     # Launch!
-    launch_pod
-    wait_for_pod
+    if ! launch_pod; then
+        err "Pod launch failed. Cannot proceed."
+        exit 1
+    fi
+    if ! wait_for_pod; then
+        err "Pod did not become ready. Check manually with: lium ps"
+        exit 1
+    fi
     deploy_inference
-    wait_for_endpoint
-    print_endpoint_info
-    configure_oa
 
-    echo ""
-    ok "All done! Your inference endpoint is ready for Open Agent."
+    if [[ "$FIRE_AND_FORGET" == true ]]; then
+        # Fork to background: wait for endpoint, write file, then exit parent
+        info "Pod launched. Forking to background to wait for endpoint..."
+        info "Endpoint file will be written to: ${ENDPOINT_FILE}"
+        (
+            if ! wait_for_endpoint; then
+                err "Endpoint failed to come online. Check logs: lium ssh ${POD_NAME} 'tail -f /root/vllm.log'"
+                exit 1
+            fi
+            print_endpoint_info
+            configure_oa
+            echo ""
+            ok "Fire-and-forget complete! Endpoint file: ${ENDPOINT_FILE}"
+        ) &
+        info "Background PID: $!"
+        info "You can monitor progress: tail -f /proc/$!/fd/1"
+    else
+        if ! wait_for_endpoint; then
+            err "Endpoint failed to come online. Check logs: lium ssh ${POD_NAME} 'tail -f /root/vllm.log'"
+            exit 1
+        fi
+        print_endpoint_info
+        configure_oa
+        echo ""
+        ok "All done! Your inference endpoint is ready for Open Agent."
+    fi
 }
 
 main "$@"
