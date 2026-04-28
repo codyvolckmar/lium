@@ -75,16 +75,16 @@ MODEL_CATALOG[qwen3.5-4b]="Qwen/Qwen3.5-4B|10|RTX3090|1|fp16|32768"
 # ═════════════════════════════════════════════════════════════════════════════
 
 # Qwen3.5 Mid-size
-MODEL_CATALOG[qwen3.5-9b]="Qwen/Qwen3.5-9B|20|RTX3090|1|fp16|32768"
-MODEL_CATALOG[qwen3.5-35b-a3b]="Qwen/Qwen3.5-35B-A3B|24|RTX3090|1|fp16|32768"
+MODEL_CATALOG[qwen3.5-9b]="Qwen/Qwen3.5-9B|20|RTX3090|1|fp16|16384"
+MODEL_CATALOG[qwen3.5-35b-a3b]="Qwen/Qwen3.5-35B-A3B|24|RTX3090|1|fp16|8192"
 
 # GLM-4/5 Series — Strong general performance
-MODEL_CATALOG[glm4-9b]="THUDM/GLM-4-9B-0414|20|RTX3090|1|fp16|8192"
-MODEL_CATALOG[glm5-9b]="THUDM/GLM-5-9B-0414|20|RTX3090|1|fp16|8192"
-MODEL_CATALOG[glm5.1-9b]="THUDM/GLM-5.1-9B-0414|20|RTX3090|1|fp16|8192"
+MODEL_CATALOG[glm4-9b]="zai-org/GLM-4-9B-0414|20|RTX3090|1|fp16|8192"
+MODEL_CATALOG[glm5-9b]="zai-org/GLM-5|20|RTX3090|1|fp16|8192"
+# MODEL_CATALOG[glm5.1-9b] removed - model does not exist on HuggingFace
 
 # Qwen3 MoE — Efficient sparse architecture
-MODEL_CATALOG[qwen3-30b-a3b]="Qwen/Qwen3-30B-A3B|24|RTX3090|1|fp16|32768"
+MODEL_CATALOG[qwen3-30b-a3b]="Qwen/Qwen3-30B-A3B|24|RTX3090|1|fp16|8192"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TIER 3: STANDARD (24-48GB VRAM) — Single A100 or RTX4090 with quantization
@@ -95,7 +95,7 @@ MODEL_CATALOG[deepseek-r1-distill-qwen-32b]="deepseek-ai/DeepSeek-R1-Distill-Qwe
 MODEL_CATALOG[deepseek-r1-distill-llama-70b]="deepseek-ai/DeepSeek-R1-Distill-Llama-70B|42|A100|1|4bit|8192"
 
 # GLM-4 Mid-size
-MODEL_CATALOG[glm4-32b]="THUDM/GLM-4-32B-0414|40|A100|1|fp16|32768"
+MODEL_CATALOG[glm4-32b]="zai-org/GLM-4-32B-0414|40|A100|1|fp16|32768"
 
 # Yi Series — Strong context handling
 MODEL_CATALOG[yi-34b]="01-ai/Yi-34B|40|A100|1|fp16|4096"
@@ -147,15 +147,15 @@ MODEL_CATALOG[deepseek-v3]="deepseek-ai/DeepSeek-V3|670|H100|8|fp16|131072"
 MODEL_CATALOG[deepseek-v3-4bit]="deepseek-ai/DeepSeek-V3|180|H100|3|4bit|131072"
 
 # GLM-5.1 — Massive scale
-MODEL_CATALOG[glm5.1]="THUDM/GLM-5.1-0414|800|H100|10|fp16|131072"
-MODEL_CATALOG[glm5.1-4bit]="THUDM/GLM-5.1-0414|250|H100|4|4bit|131072"
+MODEL_CATALOG[glm5.1]="zai-org/GLM-5.1-0414|800|H100|10|fp16|131072"
+MODEL_CATALOG[glm5.1-4bit]="zai-org/GLM-5.1-0414|250|H100|4|4bit|131072"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SPECIALTY: LONG CONTEXT (1M+ tokens)
 # ═════════════════════════════════════════════════════════════════════════════
 
 MODEL_CATALOG[qwen2.5-1m]="Qwen/Qwen2.5-1M|160|H100|2|4bit|1000000"
-MODEL_CATALOG[glm4-1m]="THUDM/GLM-4-1M-0414|160|H100|2|4bit|1000000"
+MODEL_CATALOG[glm4-1m]="zai-org/GLM-4-1M-0414|160|H100|2|4bit|1000000"
 
 # ── State file ───────────────────────────────────────────────────────────────
 STATE_DIR="${HOME}/.lium-inference"
@@ -196,6 +196,7 @@ load_state() {
 write_endpoint_file() {
     cat > "${ENDPOINT_FILE}" <<EOF
 {
+  "status": "verified",
   "endpoint": "${ENDPOINT_URL}/v1",
   "api_key": "${API_KEY}",
   "model": "${HF_REPO}",
@@ -211,6 +212,36 @@ EOF
     info "  endpoint: ${ENDPOINT_URL}/v1"
     info "  api_key:  ${API_KEY}"
     info "  model:    ${HF_REPO}"
+}
+
+# ── Print pending endpoint info (provisioning in progress) ───────────────────
+print_endpoint_info_pending() {
+    cat > "${ENDPOINT_FILE}" << EOF
+{
+  "status": "provisioning",
+  "message": "vLLM is starting in background. Poll this file or check pod status.",
+  "endpoint": "pending",
+  "api_key": "${API_KEY}",
+  "model": "${HF_REPO}",
+  "model_key": "${SELECTED_MODEL}",
+  "pod_id": "${POD_NAME}",
+  "gpu": "${GPU_TYPE} x${GPU_COUNT}",
+  "port": "${POD_PORT}",
+  "ttl": "${POD_TTL:-none}",
+  "created_at": "$(date -Iseconds)",
+  "check_status_cmd": "lium exec ${POD_NAME} 'cat /root/provision-status.json'",
+  "tail_logs_cmd": "lium exec ${POD_NAME} 'tail -f /root/vllm.log'"
+}
+EOF
+    ok "Pending endpoint file written to ${ENDPOINT_FILE}"
+    info "  status: provisioning (vLLM starting in background)"
+    info "  pod:    ${POD_NAME}"
+    info "  model:  ${HF_REPO}"
+    info ""
+    info "Check provisioning status:"
+    info "  lium exec ${POD_NAME} 'cat /root/provision-status.json'"
+    info "  lium exec ${POD_NAME} 'tail -f /root/vllm.log'"
+    info "  cat ${ENDPOINT_FILE}"
 }
 
 # ── Prerequisites check ─────────────────────────────────────────────────────
@@ -238,6 +269,10 @@ declare -A AVAILABLE_GPUS
 declare -A EXECUTOR_INFO
 # Store cheapest executor per GPU type: CHEAPEST_EXECUTOR[gpu_type]=id
 declare -A CHEAPEST_EXECUTOR
+# Store ALL executors per GPU type: ALL_EXECUTORS_BY_GPU[gpu_type]="id1 id2 id3 ..."
+declare -A ALL_EXECUTORS_BY_GPU
+# Selected executor (set by pick_executor)
+SELECTED_EXECUTOR=""
 # Track max GPUs available on a single executor (pod) per GPU type
 # This is critical for multi-GPU models — they need all GPUs on the SAME pod
 declare -A MAX_GPUS_PER_EXECUTOR
@@ -265,6 +300,7 @@ parse_lium_ls() {
     AVAILABLE_GPUS=()
     EXECUTOR_INFO=()
     CHEAPEST_EXECUTOR=()
+    ALL_EXECUTORS_BY_GPU=()
     MAX_GPUS_PER_EXECUTOR=()
     local lium_output
     # Use --sort price_gpu to get cheapest GPUs first
@@ -347,10 +383,30 @@ parse_lium_ls() {
             
             # Store executor info if we have ID and price
             if [[ -n "$executor_id" && -n "$price" ]]; then
-                EXECUTOR_INFO[$executor_id]="${gpu_type}:${price}"
-                # Track cheapest executor for each GPU type (first one wins since sorted by price)
-                if [[ -z "${CHEAPEST_EXECUTOR[$gpu_type]:-}" ]]; then
+                EXECUTOR_INFO[$executor_id]="${gpu_type}:${price}:${count}"
+                # Add to ALL executors list for this GPU type
+                if [[ -n "${ALL_EXECUTORS_BY_GPU[$gpu_type]:-}" ]]; then
+                    ALL_EXECUTORS_BY_GPU[$gpu_type]="${ALL_EXECUTORS_BY_GPU[$gpu_type]} $executor_id"
+                else
+                    ALL_EXECUTORS_BY_GPU[$gpu_type]="$executor_id"
+                fi
+                # Track cheapest executor for each GPU type
+                # Prefer single-GPU pods over multi-GPU pods (cheaper overall cost)
+                local current_best="${CHEAPEST_EXECUTOR[$gpu_type]:-}"
+                if [[ -z "$current_best" ]]; then
+                    # First executor for this GPU type
                     CHEAPEST_EXECUTOR[$gpu_type]="$executor_id"
+                else
+                    # Compare GPU counts - prefer fewer GPUs (single GPU is cheapest)
+                    local current_info="${EXECUTOR_INFO[$current_best]:-}"
+                    local current_count="${current_info##*:}"
+                    if [[ "$count" -lt "$current_count" ]]; then
+                        # This executor has fewer GPUs, prefer it
+                        CHEAPEST_EXECUTOR[$gpu_type]="$executor_id"
+                    elif [[ "$count" -eq "$current_count" ]] && [[ "$(echo "$price < ${current_info#*:}" | bc -l 2>/dev/null || echo 0)" -eq 1 ]]; then
+                        # Same GPU count but cheaper price
+                        CHEAPEST_EXECUTOR[$gpu_type]="$executor_id"
+                    fi
                 fi
             fi
         fi
@@ -608,18 +664,23 @@ find_gpu() {
 
         # Fallback GPU hierarchy: B200 > H100 > A100 80GB > A6000 > L40 > RTX6000 > RTX5090 > RTX4090 > RTX3090
         local -a FALLBACKS=()
-        case "$GPU_TYPE" in
-            B200)    FALLBACKS=("H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
-            H100)    FALLBACKS=("B200" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
-            A100)    FALLBACKS=("B200" "H100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
-            A6000)   FALLBACKS=("B200" "H100" "A100" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
-            L40)     FALLBACKS=("B200" "H100" "A100" "A6000" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
-            RTX6000) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX5090" "RTX4090" "RTX3090") ;;
-            RTX5090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX4090" "RTX3090") ;;
-            RTX4090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX3090") ;;
-            RTX3090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090") ;;
-            *)       FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
-        esac
+        if [[ "${TEST_MODE:-}" == true ]]; then
+            # Test mode: only use consumer GPUs
+            FALLBACKS=("RTX4090" "RTX3090")
+        else
+            case "$GPU_TYPE" in
+                B200)    FALLBACKS=("H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+                H100)    FALLBACKS=("B200" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+                A100)    FALLBACKS=("B200" "H100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+                A6000)   FALLBACKS=("B200" "H100" "A100" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+                L40)     FALLBACKS=("B200" "H100" "A100" "A6000" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+                RTX6000) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX5090" "RTX4090" "RTX3090") ;;
+                RTX5090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX4090" "RTX3090") ;;
+                RTX4090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX3090") ;;
+                RTX3090) FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090") ;;
+                *)       FALLBACKS=("B200" "H100" "A100" "A6000" "L40" "RTX6000" "RTX5090" "RTX4090" "RTX3090") ;;
+            esac
+        fi
 
         for fb in "${FALLBACKS[@]}"; do
             local fb_count="${AVAILABLE_GPUS[$fb]:-0}"
@@ -660,6 +721,80 @@ find_gpu() {
     echo "$gpu_list"
     echo ""
     info "Available ${GPU_TYPE} GPUs shown above."
+}
+
+# ── Pick executor from available pods ───────────────────────────────────────
+pick_executor() {
+    # Get all executors that can run this model
+    local -a compatible_executors=()
+    local -a executor_ids=()
+    
+    # Find executors with compatible GPU types (using hierarchy)
+    for avail_gpu in "${!ALL_EXECUTORS_BY_GPU[@]}"; do
+        if gpu_can_substitute "$avail_gpu" "$GPU_TYPE"; then
+            for exec_id in ${ALL_EXECUTORS_BY_GPU[$avail_gpu]}; do
+                local exec_info="${EXECUTOR_INFO[$exec_id]}"
+                local exec_gpu="${exec_info%%:*}"
+                local exec_price="${exec_info#*:}"
+                exec_price="${exec_price%:*}"
+                local exec_count="${exec_info##*:}"
+                
+                # Check if this executor has enough GPUs
+                if [[ "$exec_count" -ge "$GPU_COUNT" ]]; then
+                    # In test mode, only allow RTX3090/RTX4090 with single GPU
+                    if [[ "${TEST_MODE:-}" == true ]]; then
+                        if [[ "$exec_gpu" == "RTX3090" || "$exec_gpu" == "RTX4090" ]] && [[ "$exec_count" -eq 1 ]]; then
+                            compatible_executors+=("$exec_id|$exec_gpu|$exec_price|$exec_count")
+                            executor_ids+=("$exec_id")
+                        fi
+                    else
+                        compatible_executors+=("$exec_id|$exec_gpu|$exec_price|$exec_count")
+                        executor_ids+=("$exec_id")
+                    fi
+                fi
+            done
+        fi
+    done
+    
+    if [[ ${#compatible_executors[@]} -eq 0 ]]; then
+        err "No compatible executors found for ${GPU_TYPE} x${GPU_COUNT}"
+        exit 1
+    fi
+    
+    # Sort by price (cheapest first)
+    IFS=$'\n' sorted=($(sort -t'|' -k3 -n <<<"${compatible_executors[*]}")); unset IFS
+    compatible_executors=("${sorted[@]}")
+    
+    echo ""
+    echo -e "${BOLD}Select an executor (pod) to run on:${NC}"
+    echo ""
+    
+    local i=1
+    for entry in "${compatible_executors[@]}"; do
+        IFS='|' read -r exec_id exec_gpu exec_price exec_count <<< "$entry"
+        printf "  ${CYAN}%2d${NC}) %-25s ${YELLOW}[%s x%d | $%s/hr]${NC}\n" "$i" "$exec_id" "$exec_gpu" "$exec_count" "$exec_price"
+        ((i++))
+    done
+    echo ""
+    
+    read -rp "Enter number [1-$((i-1)), default=1 (cheapest)]: " exec_choice
+    exec_choice="${exec_choice:-1}"
+    
+    if [[ "$exec_choice" -lt 1 || "$exec_choice" -gt $((i-1)) ]] 2>/dev/null; then
+        err "Invalid selection."
+        exit 1
+    fi
+    
+    # Get selected executor
+    local selected_entry="${compatible_executors[$((exec_choice-1))]}"
+    SELECTED_EXECUTOR="${selected_entry%%|*}"
+    
+    # Update GPU_TYPE and GPU_COUNT from selected executor
+    IFS='|' read -r _ exec_gpu _ exec_count <<< "$selected_entry"
+    GPU_TYPE="$exec_gpu"
+    GPU_COUNT="$exec_count"
+    
+    ok "Selected executor: ${SELECTED_EXECUTOR} (${GPU_TYPE} x${GPU_COUNT})"
 }
 
 # ── Ask for duration ────────────────────────────────────────────────────────
@@ -706,12 +841,12 @@ launch_pod() {
     # Trim to reasonable length
     POD_NAME="${POD_NAME:0:40}"
 
-    # Find cheapest executor for this GPU type
-    local cheapest_executor="${CHEAPEST_EXECUTOR[$GPU_TYPE]:-}"
+    # Use selected executor (from pick_executor) or fall back to cheapest
+    local use_executor="${SELECTED_EXECUTOR:-${CHEAPEST_EXECUTOR[$GPU_TYPE]:-}}"
     local executor_info=""
-    if [[ -n "$cheapest_executor" ]]; then
-        executor_info="${EXECUTOR_INFO[$cheapest_executor]:-}"
-        info "Launching pod '${POD_NAME}' on ${GPU_TYPE} x${GPU_COUNT} (cheapest executor: ${cheapest_executor})..."
+    if [[ -n "$use_executor" ]]; then
+        executor_info="${EXECUTOR_INFO[$use_executor]:-}"
+        info "Launching pod '${POD_NAME}' on ${GPU_TYPE} x${GPU_COUNT} (executor: ${use_executor})..."
     else
         info "Launching pod '${POD_NAME}' on ${GPU_TYPE} x${GPU_COUNT}..."
     fi
@@ -725,28 +860,59 @@ launch_pod() {
     local launch_output
     local launch_rc
     # Don't specify port - let Lium assign any available port
-    # Pipe 'yes' to auto-confirm the interactive prompt
-    # NOTE: Disable pipefail because 'yes' gets SIGPIPE when lium exits
+    # Use -y flag to skip confirmation prompt (no 'yes' pipe needed)
+    # Run in background with output to temp file - lium up attaches to console otherwise
     # NOTE: --jupyter bypasses broken default templates on some executors
-    set +o pipefail
-    if [[ -n "$cheapest_executor" ]]; then
-        # Use specific executor ID for cheapest option
-        # --jupyter bypasses broken default templates on some executors
-        launch_output=$(yes | lium up "${cheapest_executor}" --name "${POD_NAME}" --jupyter ${ttl_flag} 2>&1) || true
+    local launch_tmpfile
+    launch_tmpfile=$(mktemp)
+    
+    if [[ -n "$use_executor" ]]; then
+        # Use specific executor ID
+        lium up "${use_executor}" --name "${POD_NAME}" --ports 1 --jupyter -y ${ttl_flag} > "$launch_tmpfile" 2>&1 &
     elif [[ "$GPU_COUNT" -gt 1 ]]; then
-        launch_output=$(yes | lium up --gpu "${GPU_TYPE}" -c "${GPU_COUNT}" --name "${POD_NAME}" --jupyter ${ttl_flag} 2>&1) || true
+        lium up --gpu "${GPU_TYPE}" -c "${GPU_COUNT}" --name "${POD_NAME}" --ports 1 --jupyter -y ${ttl_flag} > "$launch_tmpfile" 2>&1 &
     else
-        launch_output=$(yes | lium up --gpu "${GPU_TYPE}" --name "${POD_NAME}" --jupyter ${ttl_flag} 2>&1) || true
+        lium up --gpu "${GPU_TYPE}" --name "${POD_NAME}" --ports 1 --jupyter -y ${ttl_flag} > "$launch_tmpfile" 2>&1 &
     fi
-    launch_rc=$?
-    set -o pipefail
-
-    # Check for failure indicators in output
-    if [[ "$launch_rc" -ne 0 ]] || echo "$launch_output" | grep -qi "No executors available\|error\|failed"; then
-        err "Failed to launch pod!"
-        err "  ${launch_output}"
-        return 1
+    local launch_pid=$!
+    
+    info "Pod launch initiated (PID: ${launch_pid}). Waiting for pod to appear..."
+    
+    # Wait for pod to appear in lium ps (up to 60s)
+    local wait_count=0
+    local max_launch_wait=60
+    while [[ $wait_count -lt $max_launch_wait ]]; do
+        sleep 2
+        wait_count=$((wait_count + 2))
+        
+        # Check if pod exists
+        if lium ps 2>/dev/null | grep -q "${POD_NAME}"; then
+            ok "Pod '${POD_NAME}' appeared in lium ps!"
+            break
+        fi
+        
+        # Check if launch process exited with error
+        if ! kill -0 $launch_pid 2>/dev/null; then
+            launch_output=$(cat "$launch_tmpfile" 2>/dev/null || echo "No output captured")
+            if echo "$launch_output" | grep -qi "No executors available\|error\|failed"; then
+                err "Failed to launch pod!"
+                err "  ${launch_output}"
+                rm -f "$launch_tmpfile"
+                return 1
+            fi
+        fi
+        
+        printf "  [%ds / %ds] Waiting for pod creation...\n" "$wait_count" "$max_launch_wait"
+    done
+    
+    # Kill the background lium up process if still running (it attaches to console)
+    if kill -0 $launch_pid 2>/dev/null; then
+        info "Detaching from pod console (killing attach process)..."
+        kill $launch_pid 2>/dev/null || true
+        sleep 1
     fi
+    
+    rm -f "$launch_tmpfile"
 
     # Verify pod actually exists and discover the assigned port
     sleep 2
@@ -758,17 +924,20 @@ launch_pod() {
         return 1
     fi
 
-    # Extract the assigned port from lium ps output (format varies)
-    # Try to find a port number in the output
-    POD_PORT=$(echo "$pod_info" | grep -oP ':\K\d+' | head -1 || true)
+    # Extract the assigned port from lium ps output
+    # Lium format: "40031:40031, 40032:40032, ..." (external:internal mapping)
+    # We need to pick one of the exposed ports (not SSH port 22)
+    # 
+    # Strategy: Find all port mappings, exclude SSH (22:xxxxx), pick first exposed port
+    POD_PORT=$(echo "$pod_info" | grep -oP '\b\d{5}:\d{5}\b' | head -1 | cut -d: -f1 || true)
     if [[ -z "$POD_PORT" ]]; then
-        # Fallback: try to extract from ports column
-        POD_PORT=$(echo "$pod_info" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/) print $i}' | head -1 || true)
+        # Fallback: try to find any 5-digit port (Lium uses 40xxx range)
+        POD_PORT=$(echo "$pod_info" | grep -oP '\b4\d{4}\b' | head -1 || true)
     fi
     if [[ -z "$POD_PORT" ]]; then
-        # Last resort: default to 8000 and hope for the best
-        warn "Could not auto-detect port from lium ps. Using default 8000."
-        POD_PORT=8000
+        # Last resort: default to 40031 (first exposed port typically)
+        warn "Could not auto-detect port from lium ps. Using default 40031."
+        POD_PORT=40031
     fi
 
     ok "Pod '${POD_NAME}' created! Assigned port: ${POD_PORT}"
@@ -820,7 +989,8 @@ deploy_inference() {
     info "Generated API key: ${API_KEY}"
 
     # Build the vLLM launch command
-    local VLLM_CMD="pip install vllm && "
+    # Use --break-system-packages for Ubuntu 24.04+ (PEP 668)
+    local VLLM_CMD="pip install --break-system-packages vllm && "
 
     # For multi-GPU, use tensor parallel
     if [[ "$GPU_COUNT" -gt 1 ]]; then
@@ -837,46 +1007,132 @@ deploy_inference() {
     info "Running inference server setup on pod..."
     info "  Command: ${VLLM_CMD}"
 
-    # Create a startup script on the pod using echo (more reliable than heredoc)
-    info "Creating startup script on pod..."
-    lium exec "${POD_NAME}" "echo '#!/bin/bash' > /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'set -e' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo === Starting vLLM deployment === > /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo Timestamp: \$(date) >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo Model: ${HF_REPO} >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo Port: ${POD_PORT} >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo GPU Count: ${GPU_COUNT} >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo === GPU Check === >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'nvidia-smi >> /root/vllm.log 2>&1 || echo WARNING: nvidia-smi failed >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo === Installing vLLM === >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'pip install vllm >> /root/vllm.log 2>&1' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo 'echo === Starting vLLM server === >> /root/vllm.log' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "echo '${VLLM_CMD}' >> /root/start-vllm.sh"
-    lium exec "${POD_NAME}" "chmod +x /root/start-vllm.sh"
+    # Create a comprehensive provisioning script and send it to the pod
+    info "Creating provisioning script on pod..."
+    
+    # Write the provisioning script to a local temp file first
+    local PROVISION_TMPFILE
+    PROVISION_TMPFILE=$(mktemp /tmp/provision-vllm.XXXXXX.sh)
+    
+    # Use unquoted heredoc to allow variable expansion
+    cat << REMOTE_SCRIPT > "$PROVISION_TMPFILE"
+#!/bin/bash
+# Auto-generated vLLM provisioning script
+# Runs in background, writes status to /root/provision-status.json
 
-    # Run the script in background with nohup
-    info "Starting vLLM in background..."
-    lium exec "${POD_NAME}" "nohup /root/start-vllm.sh >> /root/vllm.log 2>&1 &"
+set -e
 
-    # Show initial log output so user can see it's working
-    sleep 2
-    info "Initial log output:"
-    lium exec "${POD_NAME}" "cat /root/vllm.log" 2>/dev/null || echo "  (log not yet available)"
+LOG="/root/vllm.log"
+STATUS_FILE="/root/provision-status.json"
+PORT="${POD_PORT}"
+MODEL="${HF_REPO}"
+GPU_COUNT="${GPU_COUNT}"
+API_KEY="${API_KEY}"
+VLLM_CMD="${VLLM_CMD}"
 
-    # Verify the process started
-    sleep 3
-    local proc_check
-    proc_check=$(lium exec "${POD_NAME}" "pgrep -f 'vllm|start-vllm' || echo 'NOT_FOUND'" 2>/dev/null || true)
-    if [[ "$proc_check" == "NOT_FOUND" || -z "$proc_check" ]]; then
-        warn "vLLM process may not have started. Check log:"
-        lium exec "${POD_NAME}" "cat /root/vllm.log" 2>/dev/null || true
-    else
-        ok "vLLM process started (PID: ${proc_check})"
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] \$*" >> "\$LOG"; }
+update_status() {
+    echo '{"status":"'\$1'","message":"'\$2'","timestamp":"'$(date -Iseconds)'","port":"'\$PORT'","model":"'\$MODEL'"}' > "\$STATUS_FILE"
+}
+
+log "=== vLLM Provisioning Started ==="
+log "Model: \$MODEL"
+log "Port: \$PORT"
+log "GPU Count: \$GPU_COUNT"
+update_status "starting" "Initializing provisioning"
+
+# GPU check
+log "=== GPU Check ==="
+nvidia-smi >> "\$LOG" 2>&1 || { log "WARNING: nvidia-smi failed"; }
+update_status "checking" "GPU verification"
+
+# Install vLLM
+log "=== Installing vLLM ==="
+update_status "installing" "Installing vLLM package"
+if ! pip install --break-system-packages vllm >> "\$LOG" 2>&1; then
+    log "ERROR: pip install vllm failed!"
+    update_status "failed" "pip install vllm failed - check /root/vllm.log"
+    # Try to capture and show the error
+    tail -50 "\$LOG" >> "\$LOG"
+    exit 1
+fi
+log "vLLM installed successfully"
+update_status "installed" "vLLM installed, starting server"
+
+# Start vLLM server
+log "=== Starting vLLM Server ==="
+update_status "loading" "Loading model (this takes several minutes)"
+
+log "Executing: \$VLLM_CMD"
+eval "\$VLLM_CMD" >> "\$LOG" 2>&1 &
+VLLM_PID=\$!
+
+log "vLLM started with PID: \$VLLM_PID"
+
+# Wait for vLLM to be ready (poll health endpoint)
+log "Waiting for vLLM to become healthy..."
+MAX_WAIT=600
+ELAPSED=0
+while [ \$ELAPSED -lt \$MAX_WAIT ]; do
+    # vLLM returns HTTP 200 when healthy (body may be empty or vary)
+    if curl -s -o /dev/null -w '%{http_code}' "http://localhost:\$PORT/health" 2>/dev/null | grep -q "200"; then
+        log "=== vLLM is HEALTHY ==="
+        update_status "ready" "Endpoint is live and ready"
+        echo "PROVISIONING_COMPLETE" >> "\$LOG"
+        exit 0
     fi
+    # Also check /v1/models as fallback
+    if curl -s -o /dev/null -w '%{http_code}' "http://localhost:\$PORT/v1/models" 2>/dev/null | grep -q "200"; then
+        log "=== vLLM is HEALTHY (via /v1/models) ==="
+        update_status "ready" "Endpoint is live and ready"
+        echo "PROVISIONING_COMPLETE" >> "\$LOG"
+        exit 0
+    fi
+    sleep 5
+    ELAPSED=\$((ELAPSED + 5))
+    update_status "loading" "Loading model (\${ELAPSED}s elapsed)"
+done
 
-    ok "Inference server starting in background on pod."
+log "ERROR: vLLM did not become healthy within \${MAX_WAIT}s"
+update_status "failed" "Timeout waiting for vLLM"
+exit 1
+REMOTE_SCRIPT
+
+    # Make the local script executable
+    chmod +x "$PROVISION_TMPFILE"
+    
+    # Send the script to the pod using lium exec --script
+    info "Uploading provisioning script to pod..."
+    lium exec "${POD_NAME}" --script "$PROVISION_TMPFILE" 2>&1 || {
+        err "Failed to upload provisioning script to pod!"
+        rm -f "$PROVISION_TMPFILE"
+        return 1
+    }
+    
+    # Clean up local temp file
+    rm -f "$PROVISION_TMPFILE"
+    
+    # Run the provisioning script in background with nohup
+    info "Starting vLLM provisioning in background..."
+    lium exec "${POD_NAME}" "nohup /root/provision-vllm.sh >> /root/vllm.log 2>&1 &"
+
+    # Give it a moment to start
+    sleep 2
+
+    # Show initial status
+    info "Provisioning started. Checking initial status..."
+    lium exec "${POD_NAME}" "cat /root/provision-status.json 2>/dev/null || echo '{\"status\":\"starting\"}'" 2>/dev/null || true
+
+    # Show initial log output
+    info "Initial log output:"
+    lium exec "${POD_NAME}" "head -20 /root/vllm.log" 2>/dev/null || echo "  (log not yet available)"
+
+    ok "Inference server provisioning in background on pod."
     info "Model download + loading may take 5-15 minutes depending on model size."
-    info "Monitor progress with: lium exec ${POD_NAME} 'tail -f /root/vllm.log'"
+    info ""
+    info "Check status with:"
+    info "  lium exec ${POD_NAME} 'cat /root/provision-status.json'"
+    info "  lium exec ${POD_NAME} 'tail -f /root/vllm.log'"
 }
 
 # ── Wait for endpoint ───────────────────────────────────────────────────────
@@ -904,26 +1160,69 @@ wait_for_endpoint() {
         POD_IP=$(lium ssh "${POD_NAME}" "hostname -I" 2>/dev/null | awk '{print $1}' || true)
     fi
 
+    if [[ -z "$POD_IP" ]]; then
+        # Try lium ps --json for structured output
+        warn "Trying JSON output from lium ps..."
+        POD_IP=$(lium ps --json 2>/dev/null | jq -r ".[] | select(.name == \"${POD_NAME}\") | .ip // .host_ip // empty" | head -1 || true)
+    fi
+
+    if [[ -z "$POD_IP" ]]; then
+        # Try extracting from lium port-forward output
+        warn "Trying port-forward to detect IP..."
+        local pf_info
+        pf_info=$(lium port-forward "${POD_NAME}" --dry-run 2>&1 || true)
+        POD_IP=$(echo "$pf_info" | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1 || true)
+    fi
+
     ENDPOINT_PORT=${POD_PORT}
 
     if [[ -n "$POD_IP" ]]; then
         ENDPOINT_URL="http://${POD_IP}:${ENDPOINT_PORT}"
     else
-        # Fallback: use lium ssh port forwarding info
-        err "Could not determine pod IP address. Cannot proceed."
-        err "Try: lium ps to see pod status, or lium ssh ${POD_NAME} 'hostname -I'"
-        return 1
+        # Final fallback: use localhost with port-forward
+        warn "Could not determine pod IP. Setting up port-forward on localhost..."
+        ENDPOINT_URL="http://localhost:${ENDPOINT_PORT}"
+        # Start port-forward in background
+        lium port-forward "${POD_NAME}" "${ENDPOINT_PORT}:${ENDPOINT_PORT}" &
+        sleep 2
+        ok "Using localhost port-forward. Endpoint: ${ENDPOINT_URL}"
     fi
+
+    # Print endpoint info immediately so user can use it even if health check hangs
+    echo ""
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}  ENDPOINT READY TO USE (vLLM is loading model)${NC}"
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "  ${BOLD}Endpoint URL:${NC}    ${ENDPOINT_URL}"
+    echo -e "  ${BOLD}API Key:${NC}        ${API_KEY}"
+    echo -e "  ${BOLD}Model:${NC}          ${HF_REPO}"
+    echo -e "  ${BOLD}Pod Name:${NC}       ${POD_NAME}"
+    echo ""
+    echo -e "  ${CYAN}OpenAI-compatible API:${NC}"
+    echo -e "    curl ${ENDPOINT_URL}/v1/chat/completions \\"
+    echo -e "      -H 'Authorization: Bearer ${API_KEY}' \\"
+    echo -e "      -H 'Content-Type: application/json' \\"
+    echo -e "      -d '{\"model\": \"${HF_REPO}\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'"
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════${NC}"
+    echo ""
 
     # Wait for vLLM to be ready
     info "Waiting for vLLM to finish loading model (this can take a while for large models)..."
     elapsed=0
     while [[ "$elapsed" -lt "$max_wait" ]]; do
-        # Check if vLLM is responding
+        # Check if vLLM is responding - try multiple endpoints and response formats
         local health
-        health=$(lium exec "${POD_NAME}" "curl -s http://localhost:${POD_PORT}/health" 2>/dev/null || true)
-        if [[ "$health" == *"OK"* || "$health" == *"ready"* ]]; then
+        health=$(lium exec "${POD_NAME}" "curl -s -o /dev/null -w '%{http_code}' http://localhost:${POD_PORT}/health" 2>/dev/null || true)
+        # vLLM returns 200 when healthy (even if body is empty or different)
+        if [[ "$health" == "200" ]]; then
             ok "Inference endpoint is LIVE!"
+            return 0
+        fi
+        # Also try the models endpoint as a fallback
+        local models_check
+        models_check=$(lium exec "${POD_NAME}" "curl -s -o /dev/null -w '%{http_code}' http://localhost:${POD_PORT}/v1/models" 2>/dev/null || true)
+        if [[ "$models_check" == "200" ]]; then
+            ok "Inference endpoint is LIVE! (verified via /v1/models)"
             return 0
         fi
 
@@ -944,6 +1243,25 @@ wait_for_endpoint() {
     err "  lium ssh ${POD_NAME}"
     err "  tail -f /root/vllm.log"
     return 1
+}
+
+# ── Verify endpoint with actual API call ─────────────────────────────────────
+verify_endpoint() {
+    info "Verifying endpoint with test API call..."
+    
+    local test_response
+    test_response=$(lium exec "${POD_NAME}" "curl -s -X POST http://localhost:${POD_PORT}/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d '{\"model\": \"${HF_REPO}\", \"messages\": [{\"role\": \"user\", \"content\": \"Say OK\"}], \"max_tokens\": 5}'" 2>/dev/null || true)
+    
+    if echo "$test_response" | grep -q '"choices"'; then
+        ok "✓ Endpoint verified! API is responding correctly."
+        return 0
+    else
+        warn "Endpoint health check passed but API test failed."
+        warn "Response: ${test_response:0:200}"
+        return 1
+    fi
 }
 
 # ── Print endpoint info ─────────────────────────────────────────────────────
@@ -1121,6 +1439,7 @@ main() {
             echo "  --ttl DURATION, -t      Pod TTL (e.g. 1h, 2h, 4h, 8h, 24h). Default: 2h"
             echo "  --status, -s            Show current pod status"
             echo "  --stop                  Stop and remove the pod"
+            echo "  --test                  Test mode: restrict to single 3090/4090 (cheaper testing)"
             echo "  --help, -h              Show this help"
             echo ""
             echo "Fire-and-forget mode:"
@@ -1157,6 +1476,10 @@ main() {
                 ;;
             --fire-and-forget|-f)
                 FIRE_AND_FORGET=true
+                shift
+                ;;
+            --test)
+                TEST_MODE=true
                 shift
                 ;;
             --ttl|-t)
@@ -1205,8 +1528,25 @@ main() {
     info "Refreshing GPU availability data..."
     parse_lium_ls 2>/dev/null || true
 
+    # Apply test mode restrictions
+    if [[ "${TEST_MODE:-}" == true ]]; then
+        info "Test mode: restricting to single RTX3090 or RTX4090 GPUs..."
+        # Override GPU selection to consumer GPUs only
+        if [[ "$GPU_TYPE" != "RTX3090" && "$GPU_TYPE" != "RTX4090" ]]; then
+            info "  Original GPU type ${GPU_TYPE} overridden for test mode"
+            GPU_TYPE="RTX4090"
+        fi
+        GPU_COUNT=1
+        info "  Using ${GPU_TYPE} x${GPU_COUNT} for testing"
+    fi
+
     # Find available GPUs
     find_gpu
+
+    # Let user pick which executor (pod) to use
+    if [[ "$FIRE_AND_FORGET" != true ]]; then
+        pick_executor
+    fi
 
     # Duration / TTL
     if [[ -n "$CUSTOM_TTL" ]]; then
@@ -1243,8 +1583,12 @@ main() {
     fi
     deploy_inference
 
+    # Write pending endpoint file immediately so user has something to poll
+    ENDPOINT_URL="pending"  # Will be updated when ready
+    print_endpoint_info_pending
+    
     if [[ "$FIRE_AND_FORGET" == true ]]; then
-        # Fork to background: wait for endpoint, write file, then exit parent
+        # Fork to background: wait for endpoint, verify, update file, then exit parent
         info "Pod launched. Forking to background to wait for endpoint..."
         info "Endpoint file will be written to: ${ENDPOINT_FILE}"
         (
@@ -1252,22 +1596,46 @@ main() {
                 err "Endpoint failed to come online. Check logs: lium ssh ${POD_NAME} 'tail -f /root/vllm.log'"
                 exit 1
             fi
+            # Verify with actual API call before declaring ready
+            if ! verify_endpoint; then
+                err "Endpoint verification failed. Check logs: lium ssh ${POD_NAME} 'tail -f /root/vllm.log'"
+                exit 1
+            fi
             print_endpoint_info
             configure_oa
             echo ""
             ok "Fire-and-forget complete! Endpoint file: ${ENDPOINT_FILE}"
+            ok "Point your agent at: ${ENDPOINT_URL}/v1"
         ) &
         info "Background PID: $!"
         info "You can monitor progress: tail -f /proc/$!/fd/1"
     else
-        if ! wait_for_endpoint; then
-            err "Endpoint failed to come online. Check logs: lium ssh ${POD_NAME} 'tail -f /root/vllm.log'"
-            exit 1
-        fi
-        print_endpoint_info
-        configure_oa
-        echo ""
-        ok "All done! Your inference endpoint is ready for Open Agent."
+        # Interactive mode: return immediately, let user poll for endpoint
+        info ""
+        info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        info "  Pod is provisioning in the background."
+        info "  The endpoint file will be updated when ready."
+        info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        info ""
+        ok "Provisioning started! Check status with:"
+        info "  lium exec ${POD_NAME} 'cat /root/provision-status.json'"
+        info "  lium exec ${POD_NAME} 'tail -f /root/vllm.log'"
+        info "  cat ${ENDPOINT_FILE}"
+        info ""
+        info "When status shows 'verified', the endpoint URL will be in ${ENDPOINT_FILE}"
+        
+        # Fork background process to update endpoint file when ready
+        (
+            if wait_for_endpoint; then
+                # Verify with actual API call before declaring ready
+                if verify_endpoint; then
+                    print_endpoint_info
+                    configure_oa
+                    ok "Endpoint ready! Updated: ${ENDPOINT_FILE}"
+                fi
+            fi
+        ) &
+        info "Background watcher PID: $!"
     fi
 }
 
